@@ -2,13 +2,15 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 
-// Base64 امیجز کا سائز بڑا ہو سکتا ہے اس لیے limit بڑھا دی ہے
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 
 let pendingTasks = {}; 
 
 app.post('/api/new-task', (req, res) => {
+    // پرانے سارے پینڈنگ ٹاسک مٹا دو تاکہ صرف نیا ٹاسک ہی ڈیش بورڈ پر رہے
+    pendingTasks = {}; 
+
     const taskId = Date.now().toString();
     pendingTasks[taskId] = {
         id: taskId,
@@ -16,7 +18,7 @@ app.post('/api/new-task', (req, res) => {
         status: 'pending',
         clicks: []
     };
-    console.log("New task received on server:", taskId);
+    console.log("New task received & old cleared:", taskId);
     res.json({ success: true, taskId: taskId });
 });
 
