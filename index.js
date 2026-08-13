@@ -1,89 +1,118 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
+const fs = require('fs'); 
 const app = express();
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 
-const dataDir = fs.existsSync('/app/data') ? '/app/data' : __dirname;
-const DATA_FILE = path.join(dataDir, 'trained_data.json');
+let hcaptchaPending = {};
+let hcaptchaTrained = {};
 
-let pendingTasks = {}; 
-let trainedTasks = {}; 
-
-if (fs.existsSync(DATA_FILE)) {
+// 🚀 JADU 1: Server on hotay hi purani Trained Memory wapas load karna
+const MEMORY_FILE = 'memory.json';
+if (fs.existsSync(MEMORY_FILE)) {
     try {
-        const rawData = fs.readFileSync(DATA_FILE, 'utf8');
-        trainedTasks = JSON.parse(rawData);
-        console.log(`Purana Data Load Ho Gaya! Total Trained: ${Object.keys(trainedTasks).length}`);
-    } catch (err) {
-        console.log("Data load error:", err);
+        let data = fs.readFileSync(MEMORY_FILE);
+        hcaptchaTrained = JSON.parse(data);
+        console.log(`[Success] Old Trained Memory Loaded! Total Tasks: ${Object.keys(hcaptchaTrained).length}`);
+    } catch (e) {
+        console.log("Memory load error, starting fresh.");
     }
 }
 
-function saveData() {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(trainedTasks, null, 2));
-}
-
-app.post('/api/new-task', (req, res) => {
-    const taskPayload = req.body;
-    const taskId = taskPayload.id || Date.now().toString();
+// 🚀 JADU 2: Smart Auto-Cleaner (Sirf purane PENDING tasks ko delete karega taake RAM full na ho)
+setInterval(() => {
+    let now = Date.now();
+    let deletedCount = 0;
     
-    if (!pendingTasks[taskId] && !trainedTasks[taskId]) {
-        pendingTasks[taskId] = {
-            id: taskId,
-            taskData: taskPayload, 
-            status: 'pending',
-            clicks: [],
-            timestamp: new Date().toLocaleTimeString()
-        };
+    for (let taskId in hcaptchaPending) {
+        let taskTime = new Date(hcaptchaPending[taskId].timestamp).getTime();
+        // Agar koi pending task 5 minute (300,000 ms) se purana hai, usay RAM se nikal do
+        if (now - taskTime > 300000) {
+            delete hcaptchaPending[taskId];
+            deletedCount++;
+        }
     }
-    res.json({ success: true, taskId: taskId });
-});
-
-app.get('/api/get-tasks', (req, res) => {
-    res.json({ pending: pendingTasks, trained: trainedTasks });
-});
-
-app.post('/api/submit-clicks', (req, res) => {
-    const { taskId, clicks } = req.body;
     
-    if (pendingTasks[taskId]) {
-        // ٹرین ہونے کے بعد ہم امیج کا بوجھ ختم کر رہے ہیں تاکہ میموری فری رہے
-        trainedTasks[taskId] = {
-            id: taskId,
-            clicks: clicks,
-            status: 'solved',
-            timestamp: new Date().toLocaleTimeString()
-        };
-        delete pendingTasks[taskId];
-        saveData(); 
-        res.json({ success: true });
-    } else {
-        res.status(404).json({ error: "Task not found" });
+    if (deletedCount > 0) {
+        console.log(`[Memory Cleaner] ${deletedCount} old pending tasks removed. RAM Freed!`);
+        if (global.gc) global.gc(); // Node.js ko kachra saaf karne ka order
     }
-});
+}, 300000); // Har 5 minute baad check karega
 
-app.delete('/api/delete-task/:taskId', (req, res) => {
-    const taskId = req.params.taskId;
-    delete pendingTasks[taskId];
-    if (trainedTasks[taskId]) {
-        delete trainedTasks[taskId];
-        saveData();
+// 1. Naya hCaptcha Task Receive Karna
+app.post('/api/new-hcaptcha', (req, res) => {
+    const task = req.body;
+    
+    if (hcaptchaTrained[task.taskId]) {
+        return res.json({ success: true, status: 'already_trained' });
+    }
+    
+    if (!hcaptchaPending[task.taskId]) {
+        hcaptchaPending[task.taskId] = {
+            id: task.taskId,
+            prompt: task.prompt,
+            media: task.media,
+            timestamp: task.timestamp
+        };
+        console.log(`[New hCaptcha] ID: #${task.taskId} received!`);
     }
     res.json({ success: true });
 });
 
-app.get('/api/check-task/:taskId', (req, res) => {
-    const task = trainedTasks[req.params.taskId] || pendingTasks[req.params.taskId];
-    if (task && task.status === 'solved') {
-        res.json({ status: 'solved', clicks: task.clicks });
+// 2. Dashboard ke liye Tasks Bhejna
+app.get('/api/get-hcaptcha', (req, res) => {
+    res.json({
+        pending: hcaptchaPending,
+        trained: hcaptchaTrained
+    });
+});
+
+// 3. Extension ke liye Task Status Check Karna
+app.get('/api/check-hcaptcha/:id', (req, res) => {
+    const taskId = req.params.id;
+    if (hcaptchaTrained[taskId]) {
+        res.json({ status: 'solved', clicks: hcaptchaTrained[taskId].clicks });
     } else {
         res.json({ status: 'pending' });
     }
 });
 
+// 4. Dashboard se Training Data Save Karna (🚀 Paki File Mein Save Hoga)
+app.post('/api/submit-hcaptcha', (req, res) => {
+    const { taskId, clicks, prompt } = req.body;
+    
+    hcaptchaTrained[taskId] = {
+        id: taskId,
+        clicks: clicks,
+        prompt: prompt || "Trained Task",
+        trainedAt: new Date().toISOString()
+    };
+    
+    delete hcaptchaPending[taskId];
+    
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(hcaptchaTrained));
+    
+    console.log(`[Trained & Saved] hCaptcha ID: #${taskId} safely stored in file.`);
+    res.json({ success: true });
+});
+
+// 5. Dashboard se Task Delete Karna
+app.delete('/api/delete-hcaptcha/:id', (req, res) => {
+    const taskId = req.params.id;
+    
+    if (hcaptchaPending[taskId]) delete hcaptchaPending[taskId];
+    if (hcaptchaTrained[taskId]) {
+        delete hcaptchaTrained[taskId];
+        fs.writeFileSync(MEMORY_FILE, JSON.stringify(hcaptchaTrained));
+    }
+    
+    console.log(`[Deleted] hCaptcha ID: #${taskId}`);
+    res.json({ success: true });
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Lightweight Kolo Server on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`hCaptcha Master Server is running on port ${PORT} 🚀`);
+});
